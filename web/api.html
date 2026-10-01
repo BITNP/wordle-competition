@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wordle 竞赛 · 选手 API</title>
+<link rel="stylesheet" href="/base.css">
+<style>
+  body { padding: 16px; font-size: 15px; line-height: 1.6; }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+  h1 { font-size: 18px; margin: 0; letter-spacing: .04em; }
+  h2 { font-size: 14px; margin: 0 0 8px; color: var(--yellow); letter-spacing: .04em; }
+  a { color: var(--green); }
+  .pill { font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px;
+          padding: 3px 10px; text-decoration: none; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  .muted { font-size: 13px; }
+  code { background: var(--control); border-radius: 4px; padding: 1px 5px; font-size: 13px; }
+  pre { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+        overflow-x: auto; font-size: 13px; line-height: 1.5; margin: 6px 0; }
+  #tok { white-space: pre-wrap; word-break: break-all; }
+  pre.script { white-space: pre; }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border);
+           background: var(--control); color: inherit; cursor: pointer; }
+  button:hover { background: var(--gray); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 4px; table-layout: fixed; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top;
+           overflow-wrap: anywhere; word-break: break-word; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  th:first-child, td:first-child { width: 31%; }
+  th:nth-child(2), td:nth-child(2) { width: 13%; }
+  td code { white-space: normal; overflow-wrap: anywhere; word-break: break-all; }
+  ul { margin: 6px 0; padding-left: 20px; }
+  li { margin: 2px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>WORDLE 竞赛 · 选手 API</h1>
+  <a class="pill" href="/">返回比赛</a>
+</header>
+
+<div class="card">
+  <h2>① 你的凭证（HMAC token）</h2>
+  <p class="muted">选手接口（<code>/api/v1/round</code>、<code>/api/v1/guesses</code>、<code>/api/v1/leaderboard</code>）需要请求头
+    <code>Authorization: Bearer &lt;token&gt;</code>。token 就是你的身份，别外传；有效期由服务端配置决定，默认 2 小时。
+    过期或刷新本页后需重新登录，回到比赛页再点击 API 链接获取新 token，成绩不受影响。</p>
+  <pre id="tok">（正在获取…）</pre>
+  <button id="copy">复制 token</button>
+</div>
+
+<div class="card">
+  <h2>② 规则</h2>
+  <ul>
+    <li>每人每轮由服务端分配一个 5 字母小写答案，猜测必须落在下面的合法猜词表里，同一轮不能重复猜同一个词。</li>
+    <li><code>result</code> 是 5 位标记串：<code>0</code> 答案里没有这个字母；<code>1</code> 有但位置不对；<code>2</code> 位置正确（重复字母按标准 Wordle 语义）。全 <code>2</code> 即解出。</li>
+    <li>名次按 <b>步数少 → 用时短 → 提交早 → sub 小</b> 比；只有已解出的人上榜。被拒的猜测不计步、不计时。</li>
+    <li>用时 = 第一次被接受的猜测 → 解出那一刻。两次被接受的猜测间隔至少 1s（1 次/秒），脚本请自行 sleep。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h2>③ 接口</h2>
+  <table>
+    <thead><tr><th>方法与路径</th><th>鉴权</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET /api/v1/round</code></td><td>Bearer</td><td><code>{"state":"waiting|open|closed","roundNo":7}</code></td></tr>
+      <tr><td><code>POST /api/v1/guesses</code></td><td>Bearer</td><td>请求 <code>{"guess":"crane"}</code>；响应 <code>{"result":"01202"}</code></td></tr>
+      <tr><td><code>GET /api/v1/leaderboard</code></td><td>Bearer</td><td><code>{"roundNo":7,"entries":[{"rank":1,"displayName":"…","attempts":3,"elapsedMs":4120}],"me":{"solved":true,"rank":1,"attempts":3,"elapsedMs":4120}}</code></td></tr>
+      <tr><td><code>GET /words/answers.txt</code></td><td>无</td><td>答案池 2315 个词，每行一个</td></tr>
+      <tr><td><code>GET /words/valid.txt</code></td><td>无</td><td>合法猜词 12972 个词，每行一个（含答案池）</td></tr>
+    </tbody>
+  </table>
+  <p class="muted" style="margin-bottom:0">错误码：<code>bad_length</code> / <code>not_in_word_list</code> / <code>already_guessed</code>（400）、
+    <code>unauthorized</code>（401，回来换 token）、<code>round_not_open</code> / <code>expired</code> / <code>already_solved</code>（409）、
+    <code>too_many_requests</code>（429，发太快）。错误响应形如 <code>{"error":"not_in_word_list"}</code>。</p>
+</div>
+
+<div class="card">
+  <h2>④ 请求封装（Python）</h2>
+  <pre class="script" id="pyEx">#!/usr/bin/env python3
+"""请求封装：把下面的函数复制进你的脚本即可。"""
+import json, urllib.request
+
+BASE = "$BASE"
+TOKEN = "$TOKEN"
+
+
+def call(path, body=None):
+    """GET/POST 一个接口，返回解析后的 JSON。出错会抛 HTTPError，
+    e.read() 里是 {"error":"..."}。"""
+    req = urllib.request.Request(
+        BASE + path, method="POST" if body is not None else "GET",
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req) as r:
+        return json.load(r)
+
+
+def round_state():
+    """{"state":"waiting|open|closed","roundNo":7}"""
+    return call("/api/v1/round")
+
+
+def guess(word):
+    """{"result":"01202"}，全 2 即解出。"""
+    return call("/api/v1/guesses", {"guess": word})
+
+
+def leaderboard():
+    """{"roundNo":7,"entries":[...],"me":{...}}"""
+    return call("/api/v1/leaderboard")
+
+
+def load_words(name="valid"):
+    """name: "valid"（合法猜词）或 "answers"（答案池），返回词表 list。"""
+    with urllib.request.urlopen(BASE + "/words/" + name + ".txt") as r:
+        return r.read().decode().split()</pre>
+  <button id="copyPy">复制代码</button>
+</div>
+</div>
+
+<script>
+"use strict";
+// token 从地址栏 ?token= 取（选手页上的 API 链接带过来的），取到就立刻从地址栏抹掉，只留内存。
+(() => {
+  const url = new URL(location.href);
+  const token = url.searchParams.get("token") || "";
+  if (!token) { location.href = "/auth/login"; return; }   // 没带 token 就走一次登录
+  url.searchParams.delete("token");
+  history.replaceState(null, "", url.pathname + url.search + url.hash);
+
+  document.getElementById("tok").textContent = token;
+  const py = document.getElementById("pyEx");
+  py.textContent = py.textContent.split("$BASE").join(location.origin)
+                             .split("$TOKEN").join(token);
+  const wireCopy = (id, label, getText) => {
+    const btn = document.getElementById(id);
+    btn.onclick = async () => {
+      try { await navigator.clipboard.writeText(getText()); btn.textContent = "已复制 ✓"; }
+      catch { btn.textContent = "请手动选中复制"; }
+      setTimeout(() => { btn.textContent = label; }, 1500);
+    };
+  };
+  wireCopy("copy", "复制 token", () => token);
+  wireCopy("copyPy", "复制代码", () => py.textContent);
+})();
+</script>
+</body>
+</html>

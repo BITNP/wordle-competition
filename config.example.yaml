@@ -1,0 +1,19 @@
+server:
+  addr: ":8080"
+  admin_password: "change-me"   # 管理面板口令；必填
+
+db:
+  path: "data/wordle.db"
+
+auth:
+  # 必填：`openssl rand -base64 32` 生成后填这里。留空直接启动失败退出，
+  # 不自动生成 —— 自动生成意味着每次重启旧 token 全失效。
+  hmac_secret: ""
+  token_ttl: 2h
+  oidc:
+    issuer: "https://keycloak.intra/realms/wordle"
+    client_id: "wordle-backend"
+    client_secret: "..."
+    # 必须与 Keycloak client 里登记的 Valid redirect URI 完全一致
+    redirect_url: "http://192.168.1.10:8080/auth/callback"
+    display_name_claim: "preferred_username"   # 也可填 name / email

@@ -1,0 +1,6 @@
+# 现场配置与运行产物不入库
+config.yaml
+/wordle
+data/*.db
+data/*.db-wal
+data/*.db-shm

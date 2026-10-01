@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wordle 竞赛 · 管理面板</title>
+<link rel="stylesheet" href="/base.css">
+<style>
+  body { padding: 16px; font-size: 15px; line-height: 1.5; }
+  h1 { font-size: 18px; margin: 0 0 12px; letter-spacing: .04em; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  .stats { display: flex; flex-wrap: wrap; gap: 22px; }
+  .stat b { display: block; font-size: 24px; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  button { font: inherit; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border);
+           background: var(--control); color: inherit; cursor: pointer; }
+  button:hover:enabled { background: var(--gray); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--green); border-color: var(--green); color: var(--text); font-weight: 600; }
+  button.danger  { background: #8d4e4e; border-color: #8d4e4e; color: var(--text); }
+  input { font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+          background: var(--bg); color: inherit; min-width: 180px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  tr.top1 td { color: var(--yellow); font-weight: 600; }
+  #msg { color: #e0a0a0; min-height: 22px; font-size: 13px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .waiting { background: var(--muted); } .open { background: var(--green); } .closed { background: var(--yellow); }
+</style>
+</head>
+<body>
+<h1>Wordle 竞赛 · 管理面板</h1>
+
+<div class="card" id="loginCard">
+  <div class="row">
+    <input id="pw" type="password" placeholder="管理口令" autocomplete="current-password">
+    <button class="primary" id="loginBtn">登录</button>
+  </div>
+</div>
+
+<div id="msg" role="status"></div>
+
+<div id="panel" hidden>
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <div class="stats">
+        <div class="stat"><b id="roundNo">—</b><span>轮次号</span></div>
+        <div class="stat"><b id="roundAt">—</b><span>开轮时间</span></div>
+        <div class="stat"><b id="state">—</b><span>状态</span></div>
+        <div class="stat"><b id="playing">0</b><span>进行中</span></div>
+        <div class="stat"><b id="solved">0</b><span>已解出</span></div>
+      </div>
+      <div class="row">
+        <button class="danger" id="closeBtn">结束本轮</button>
+        <button class="primary" id="openBtn">开启下一轮</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between;margin-bottom:6px">
+      <b>本轮实时榜单</b><span class="muted" id="tick"></span>
+    </div>
+    <table>
+      <thead><tr><th>名次</th><th>昵称</th><th>步数</th><th>用时</th></tr></thead>
+      <tbody id="board"><tr><td colspan="4" class="muted">还没有人解出</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script src="/common.js"></script>
+<script>
+"use strict";
+const {esc, fmtMs} = WordleUI;
+let token = "";           // 只在内存，刷新即失效，重新登录即可
+let timer = null;
+const $ = id => document.getElementById(id);
+
+const fmtTime = ms => new Date(ms).toLocaleString("zh-CN", { hour12: false });
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { "Content-Type": "application/json", "X-Admin-Token": token }
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const error = new Error(body.error || ("HTTP " + res.status));
+    error.status = res.status;
+    error.code = body.error;
+    throw error;
+  }
+  return body;
+}
+
+$("loginBtn").onclick = async () => {
+  if ($("loginBtn").disabled) return;
+  $("loginBtn").disabled = true;
+  clearInterval(timer);
+  timer = null;
+  $("msg").textContent = "";
+  try {
+    const r = await api("/api/v1/admin/login", { method: "POST", body: JSON.stringify({ password: $("pw").value }) });
+    token = r.token;
+    $("pw").value = "";
+    $("loginCard").hidden = true;
+    $("panel").hidden = false;
+    await refresh();
+    if (token) timer = setInterval(refresh, 2000);   // 每 2s 拉一次
+  } catch (e) {
+    $("msg").textContent = "登录失败：" + e.message;
+  } finally {
+    $("loginBtn").disabled = false;
+  }
+};
+$("pw").addEventListener("keydown", e => { if (e.key === "Enter") $("loginBtn").click(); });
+
+$("openBtn").onclick = async () => {
+  if (!confirm("开启下一轮？上一轮进度作废，前端会在 3s 内清盘。")) return;
+  await action("/api/v1/admin/round/open");
+};
+$("closeBtn").onclick = async () => {
+  if (!confirm("结束本轮？之后到达的猜测一律 409 expired。")) return;
+  await action("/api/v1/admin/round/close");
+};
+
+async function action(path) {
+  $("msg").textContent = "";
+  try { await api(path, { method: "POST" }); await refresh(); }
+  catch (e) { $("msg").textContent = "操作失败：" + e.message; }
+}
+
+async function refresh() {
+  let st;
+  try { st = await api("/api/v1/admin/state"); }
+  catch (e) {
+    // 令牌失效（比如服务重启）就退回登录
+    $("msg").textContent = "拉取状态失败：" + e.message;
+    if (e.status === 401) { clearInterval(timer); timer = null; token = ""; $("panel").hidden = true; $("loginCard").hidden = false; }
+    return;
+  }
+  const r = st.round;
+  $("roundNo").textContent = r.no || "—";
+  $("roundAt").textContent = r.openedAt ? fmtTime(r.openedAt) : "—";
+  $("state").innerHTML = '<span class="dot ' + r.state + '"></span>' + r.state;
+  $("playing").textContent = r.playing;
+  $("solved").textContent = r.solved;
+  $("openBtn").disabled = r.state === "open";
+  $("closeBtn").disabled = r.state !== "open";
+  $("tick").textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
+
+  const rows = st.board || [];
+  $("board").innerHTML = rows.length
+    ? rows.map(e => `<tr class="${e.rank === 1 ? "top1" : ""}"><td>${e.rank}</td><td>${esc(e.displayName)}</td><td>${e.attempts}</td><td>${fmtMs(e.elapsedMs)}</td></tr>`).join("")
+    : '<tr><td colspan="4" class="muted">还没有人解出</td></tr>';
+}
+</script>
+</body>
+</html>

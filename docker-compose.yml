@@ -1,0 +1,28 @@
+# 部署单文件：app + 反向代理（Traefik 以 label 发现，网络已存在，不由本文件管理）。
+#
+# 使用：
+#   1. 在本目录放 config.yaml（现场配置，不入库）：
+#        cp config.example.yaml config.yaml && $EDITOR config.yaml
+#      注意 auth.oidc.redirect_url 必须是 https://wordle.bit-staging.bitnp.net/auth/callback
+#   2. podman-compose up -d
+#
+# 镜像由 GitHub Actions 构建并推送到 ghcr.io，此处直接拉取。
+services:
+  app:
+    image: ghcr.io/bitnp/wordle-competition:latest
+    volumes:
+      # 配置和数据库都在宿主机上，重建容器不丢数据、不改口令。
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+    restart: "on-failure:10"
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.wordle.rule: "Host(`wordle.bit-staging.bitnp.net`)"
+      traefik.http.routers.wordle.tls: "true"
+      traefik.http.services.wordle.loadbalancer.server.port: "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s

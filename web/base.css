@@ -1,0 +1,22 @@
+:root {
+  color-scheme: dark;
+  --bg: #121213;
+  --surface: #1a1a1b;   /* 卡片底色 */
+  --panel: #0e0e0f;     /* 代码块底色 */
+  --control: #2a2a2b;   /* 按钮等控件底色 */
+  --border: #3a3a3c;
+  --gray: #3a3a3c;      /* 已判定为“不在答案中”的灰 */
+  --yellow: #b59f3b;
+  --green: #538d4e;
+  --text: #e7e7e8;
+  --muted: #9a9a9c;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+.muted { color: var(--muted); }

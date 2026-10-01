@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>在线 Wordle 竞赛</title>
+<link rel="stylesheet" href="/base.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>WORDLE 竞赛</h1>
+  <span class="hgroup">
+    <a class="pill" id="apiLink" href="/auth/login" title="写脚本解题：token、接口文档、题库下载">API</a>
+    <span class="pill" id="roundPill">连接中</span>
+  </span>
+</header>
+
+<main>
+  <section id="game">
+    <div id="boardWrap"><div id="board"></div></div>
+    <div id="keyboard"></div>
+  </section>
+
+  <aside>
+    <h2>我的成绩</h2>
+    <div id="me"></div>
+    <h2>本轮榜单</h2>
+    <table>
+      <thead><tr><th>名次</th><th>昵称</th><th>步数</th><th>用时</th></tr></thead>
+      <tbody id="lboard"><tr><td colspan="4" class="muted">还没有人解出</td></tr></tbody>
+    </table>
+  </aside>
+</main>
+
+<div id="toast"></div>
+<div id="overlay" hidden>
+  <h2 id="ovTitle"></h2>
+  <p id="ovText"></p>
+</div>
+
+<script src="/common.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

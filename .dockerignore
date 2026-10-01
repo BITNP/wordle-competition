@@ -1,0 +1,9 @@
+.git
+.github
+config.yaml
+data
+wordle
+*.log
+README.md
+docker-compose.yml
+Dockerfile
