@@ -67,13 +67,12 @@ type Game struct {
 	store  *store.Store
 	logf   func(string, ...any)
 
-	no         int64 // 自增场次号：1、2、3…，启动时从库里最大场次续号
-	state      State
-	mode       Mode
-	openedAt   int64 // 开场时刻（毫秒）
-	durationMs int64 // 限时赛总时长；轮次赛 0
-	endsAt     int64 // 限时赛截止时刻（毫秒）；轮次赛 0
-	players    map[string]*progress
+	no       int64 // 自增场次号：1、2、3…，启动时从库里最大场次续号
+	state    State
+	mode     Mode
+	openedAt int64 // 开场时刻（毫秒）
+	endsAt   int64 // 限时赛截止时刻（毫秒）；轮次赛 0
+	players  map[string]*progress
 }
 
 // progress 一个人的全部过程状态。
@@ -84,17 +83,14 @@ type progress struct {
 	name string
 
 	answer  string          // 当前题的答案（只留内存）
-	seq     int             // 当前题是本场第几题，限时赛推导下一题用
 	seen    map[string]bool // 当前题猜过的词 → already_guessed
 	count   int             // 当前题被接受的猜测次数
 	firstAt int64           // 当前题计时起点：首次被接受的猜测
-	elapsed int64           // 当前题用时，答对时定格
 
-	totalElapsed int64 // 累计净解题用时 = 各题 elapsed 之和，不含换题之间的空档
+	totalElapsed int64 // 累计净解题用时 = 各题用时之和，不含换题之间的空档
 
 	lastAt int64 // 末次被接受的猜测（限速用，不随换题重置）
 
-	solved       bool  // 轮次赛：本轮已解出；限时赛恒 false（答对即换题，不回写 true）
 	lastSolvedAt int64 // 最近一次答对时刻（并列时兜底）
 
 	solvedCount   int // 已答对题数
@@ -142,36 +138,32 @@ func (g *Game) expireLocked(now int64) {
 
 // Open 开新一场：场次号 +1（1、2、3…），上一场进度整份丢弃。
 //
-// mode 为空按轮次赛处理；限时赛必须给 durationMs（MinDurationMs ~ MaxDurationMs）。
-func (g *Game) Open(now int64, mode Mode, durationMs int64) (int64, State, error) {
+// mode 必须显式指定 ModeRound 或 ModeTimed；限时赛必须给 durationMs（MinDurationMs ~ MaxDurationMs）。
+func (g *Game) Open(now int64, mode Mode, durationMs int64) (RoundStatus, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if mode == "" {
-		mode = ModeRound
-	}
 	switch mode {
 	case ModeRound:
 		durationMs = 0
 	case ModeTimed:
 		if durationMs < MinDurationMs || durationMs > MaxDurationMs {
-			return g.no, g.state, ErrBadDuration
+			return RoundStatus{}, ErrBadDuration
 		}
 	default:
-		return g.no, g.state, ErrBadMode
+		return RoundStatus{}, ErrBadMode
 	}
 
 	g.no++
 	g.state = Open
 	g.mode = mode
 	g.openedAt = now
-	g.durationMs = durationMs
 	g.endsAt = 0
 	if mode == ModeTimed {
 		g.endsAt = now + durationMs
 	}
 	g.players = map[string]*progress{}
-	return g.no, g.state, nil
+	return g.statusLocked(now), nil
 }
 
 // Close 收场。进度保留，榜单冻结成最终名次；关轮前到达的猜测仍算数。
@@ -214,7 +206,7 @@ func (g *Game) Guess(sub, name, guess string, now int64) (Outcome, error) {
 	if name != "" {
 		p.name = name
 	}
-	if g.mode == ModeRound && p.solved {
+	if g.mode == ModeRound && p.solvedCount > 0 {
 		return Outcome{}, ErrAlreadySolved
 	}
 	if g.state == Closed {
@@ -243,8 +235,7 @@ func (g *Game) Guess(sub, name, guess string, now int64) (Outcome, error) {
 		p.firstAt = now
 	}
 	if p.answer == "" {
-		p.seq++
-		p.answer = g.deriveAnswer(sub, p.seq)
+		p.answer = g.deriveAnswer(sub, p.solvedCount+1)
 	}
 
 	result := words.Judge(p.answer, guess)
@@ -254,26 +245,22 @@ func (g *Game) Guess(sub, name, guess string, now int64) (Outcome, error) {
 	}
 
 	// 答对：先定格本题成绩并落库，再决定是收工（轮次赛）还是换题（限时赛）。
-	p.solved = true
-	p.elapsed = now - p.firstAt
-	p.totalElapsed += p.elapsed
+	elapsed := now - p.firstAt
+	p.totalElapsed += elapsed
 	p.lastSolvedAt = now
 	p.solvedCount++
 	out.Solved = true
 	out.SolvedCount = p.solvedCount
-	out.ElapsedMs = p.elapsed
+	out.ElapsedMs = elapsed
 	g.saveLocked(sub, p)
 
 	if g.mode == ModeTimed {
 		// 换下一题继续。seen 必须换新表，否则上一题猜过的词在下一题会被判
-		// already_guessed；answer 也重新推导，两题撞答案的概率是 1/2315。
-		p.seq++
-		p.answer = g.deriveAnswer(sub, p.seq)
+		// already_guessed；answer 清空，等下一次被接受的猜测再推导。
+		p.answer = ""
 		p.seen = map[string]bool{}
 		p.count = 0
 		p.firstAt = 0
-		p.elapsed = 0
-		p.solved = false
 	}
 	return out, nil
 }
@@ -305,27 +292,15 @@ func (g *Game) saveLocked(sub string, p *progress) {
 
 // deriveAnswer 确定性推导某人第 seq 题的答案：
 //
-//	轮次赛：answer = 答案池[ HMAC-SHA256(secret, "assign|场次|sub") mod 2315 ]
-//	限时赛：answer = 答案池[ HMAC-SHA256(secret, "assign|timed|场次|sub|seq") mod 2315 ]
+//	answer = 答案池[ HMAC-SHA256(secret, "assign|mode|roundNo|sub|seq") mod 答案池大小 ]
 //
-// 同一场同一人同一题恒定、重启后一致、无需分配表；不同人允许碰撞（不要求互异）。
+// 两种玩法使用同一格式，轮次赛 seq 恒为 1，限时赛 seq 随答对题数递增。
+// 同一玩法、场次、选手与题号恒定，无需分配表；不同人允许碰撞（不要求互异）。
 // 答案只留内存，绝不下发、绝不落盘、绝不进日志。
 func (g *Game) deriveAnswer(sub string, seq int) string {
 	mac := hmac.New(sha256.New, g.secret)
-	payload := []byte("assign|")
-	if g.mode == ModeTimed {
-		payload = append(payload, "timed|"...)
-		payload = append(payload, strconv.FormatInt(g.no, 10)...)
-		payload = append(payload, '|')
-		payload = append(payload, sub...)
-		payload = append(payload, '|')
-		payload = append(payload, strconv.Itoa(seq)...)
-	} else {
-		payload = append(payload, strconv.FormatInt(g.no, 10)...)
-		payload = append(payload, '|')
-		payload = append(payload, sub...)
-	}
-	mac.Write(payload)
+	payload := "assign|" + string(g.mode) + "|" + strconv.FormatInt(g.no, 10) + "|" + sub + "|" + strconv.Itoa(seq)
+	mac.Write([]byte(payload))
 	sum := mac.Sum(nil)
 	return g.words.AnswerAt(int(binary.BigEndian.Uint64(sum[:8]) % uint64(g.words.AnswerCount())))
 }
@@ -355,33 +330,35 @@ func (g *Game) Status() RoundStatus {
 func (g *Game) statusLocked(now int64) RoundStatus {
 	g.expireLocked(now)
 	s := RoundStatus{
-		State:      g.state,
-		RoundNo:    g.no,
-		Mode:       g.mode,
-		OpenedAt:   g.openedAt,
-		DurationMs: g.durationMs,
-		EndsAt:     g.endsAt,
-		ServerNow:  now,
+		State:     g.state,
+		RoundNo:   g.no,
+		Mode:      g.mode,
+		OpenedAt:  g.openedAt,
+		EndsAt:    g.endsAt,
+		ServerNow: now,
+	}
+	if g.mode == ModeTimed {
+		s.DurationMs = g.endsAt - g.openedAt
 	}
 	for _, p := range g.players {
 		if p.solvedCount > 0 {
 			s.Solved++
 		}
-		if p.count > 0 && !p.solved {
+		if p.count > 0 && !(g.mode == ModeRound && p.solvedCount > 0) {
 			s.Playing++ // 猜过至少一次、还没答对当前题
 		}
 	}
 	return s
 }
 
-// Me 自己的进度，永不 null（未猜过就是 0 题、0 步）。
+// Me 自己的进度，永不 null；字段固定，未猜过的数值均为 0，未上榜的 rank 为 0。
 type Me struct {
-	Solved        bool  `json:"solved"` // 轮次赛：本轮已解出；限时赛：恒 false（可继续答）
-	Rank          int   `json:"rank,omitempty"`
-	Attempts      int   `json:"attempts"`            // 当前题步数
-	TotalAttempts int   `json:"totalAttempts"`       // 累计步数
-	SolvedCount   int   `json:"solvedCount"`         // 已答对题数
-	ElapsedMs     int64 `json:"elapsedMs,omitempty"` // 当前题用时
+	Solved        bool  `json:"solved"`        // 轮次赛：本轮已解出；限时赛：恒 false（可继续答）
+	Rank          int   `json:"rank"`          // 未上榜为 0
+	Attempts      int   `json:"attempts"`      // 当前题步数
+	TotalAttempts int   `json:"totalAttempts"` // 累计步数
+	SolvedCount   int   `json:"solvedCount"`   // 已答对题数
+	ElapsedMs     int64 `json:"elapsedMs"`     // 轮次赛答对后的本题用时；其他情况为 0
 }
 
 // Entry 榜单一行。口径与玩法无关，名次规则才随玩法变。
@@ -393,13 +370,20 @@ type Entry struct {
 	ElapsedMs   int64  `json:"elapsedMs"`   // 累计净解题用时（各题用时之和，不含换题空档）
 }
 
-// Leaderboard 当前一场的榜单（只有答对过至少一题的人），外加自己的进度。
-func (g *Game) Leaderboard(sub string) ([]Entry, Me, int64) {
+// PlayerState 选手侧的一体快照：同一时刻的场次、榜单与个人进度。
+type PlayerState struct {
+	Round   RoundStatus `json:"round"`
+	Entries []Entry     `json:"entries"`
+	Me      Me          `json:"me"`
+}
+
+// Leaderboard 当前一场的快照、榜单（只有答对过至少一题的人）与自己的进度。
+func (g *Game) Leaderboard(sub string) PlayerState {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.expireLocked(nowMs())
+	round := g.statusLocked(nowMs())
 	entries, me := g.boardLocked(sub)
-	return entries, me, g.no
+	return PlayerState{Round: round, Entries: entries, Me: me}
 }
 
 // boardLocked 出榜。排序规则随玩法不同：
@@ -412,13 +396,13 @@ func (g *Game) Leaderboard(sub string) ([]Entry, Me, int64) {
 // 榜单在内存现排（≤200 条，微秒级），数据库不参与实时排名。
 func (g *Game) boardLocked(sub string) ([]Entry, Me) {
 	type row struct {
-		sub, name string
-		p         *progress
+		sub string
+		p   *progress
 	}
 	rows := make([]row, 0, len(g.players))
 	for s, p := range g.players {
 		if p.solvedCount > 0 {
-			rows = append(rows, row{sub: s, name: p.name, p: p})
+			rows = append(rows, row{sub: s, p: p})
 		}
 	}
 	sort.Slice(rows, func(i, j int) bool {
@@ -438,8 +422,8 @@ func (g *Game) boardLocked(sub string) ([]Entry, Me) {
 		if a.count != b.count {
 			return a.count < b.count
 		}
-		if a.elapsed != b.elapsed {
-			return a.elapsed < b.elapsed
+		if a.totalElapsed != b.totalElapsed {
+			return a.totalElapsed < b.totalElapsed
 		}
 		if a.lastSolvedAt != b.lastSolvedAt {
 			return a.lastSolvedAt < b.lastSolvedAt
@@ -451,15 +435,17 @@ func (g *Game) boardLocked(sub string) ([]Entry, Me) {
 	me := Me{}
 	if p, ok := g.players[sub]; ok {
 		me.Attempts = p.count
-		me.Solved = p.solved
+		me.Solved = g.mode == ModeRound && p.solvedCount > 0
 		me.SolvedCount = p.solvedCount
 		me.TotalAttempts = p.totalAttempts
-		me.ElapsedMs = p.elapsed
+		if me.Solved {
+			me.ElapsedMs = p.totalElapsed
+		}
 	}
 	for i, r := range rows {
 		entries = append(entries, Entry{
 			Rank:        i + 1,
-			DisplayName: r.name,
+			DisplayName: r.p.name,
 			SolvedCount: r.p.solvedCount,
 			Attempts:    r.p.totalAttempts,
 			ElapsedMs:   r.p.totalElapsed,

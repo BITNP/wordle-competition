@@ -8,7 +8,7 @@
   const POLL_MS = 3000;
   const WORD_LEN = 5;
   const CLEAR_MS = 1200; // 限时赛答对后，留住刚解出的那行给玩家看一眼，再清盘换题
-  const { esc, fmtMs, fmtLeft } = WordleUI;
+  const { fmtMs, fmtLeft, boardHead, boardCells, boardEmpty } = WordleUI;
   const $ = id => document.getElementById(id);
   const boardEl = $("board");
   const keyEl = $("keyboard");
@@ -32,9 +32,8 @@
   let offset = 0;   // 服务端时钟 - 本地时钟，倒计时和截止判定都用校正后的时间
   let guesses = []; // 当前题的猜测记录
   let current = "";
-  let seq = 1;         // 限时赛当前是第几题，仅用于本地存档分桶
   let localSolved = 0; // 本地已知的答对题数，用来发现"漏了一次答对"
-  let me = { solved: false, attempts: 0, solvedCount: 0, totalAttempts: 0 };
+  let me = { solved: false, rank: 0, attempts: 0, totalAttempts: 0, solvedCount: 0, elapsedMs: 0 };
   let busy = false;
   let clearing = false; // 限时赛清盘换题的动画中，此间不接受输入
   let refreshing = false;
@@ -114,7 +113,7 @@
 
   function renderOverlay() {
     const overlay = $("overlay");
-    // 轮次赛解出即收工，玩家在看自己的棋盘，不再盖遮罩（保持原有行为）；
+    // 轮次赛解出即收工，玩家在看自己的棋盘，不再盖遮罩；
     // 限时赛只有"还没开始"和"时间到"两种情况需要遮挡。
     const show = !(mode === "round" && me.solved) && (state === "waiting" || state === "closed");
     overlay.hidden = !show || dismissed === roundNo + ":" + state;
@@ -123,8 +122,8 @@
       $("ovTitle").textContent = "等待本轮开始";
       $("ovText").textContent = "管理员开赛后会自动开始，无需刷新页面。（点一下可关掉本提示）";
     } else if (mode === "timed") {
-      $("ovTitle").textContent = "时间到";
-      $("ovText").textContent = "本场共答对 " + (me.solvedCount || 0) + " 题，名次看榜单。（点一下可关掉本提示）";
+      $("ovTitle").textContent = "本场已结束";
+      $("ovText").textContent = "本场共答对 " + me.solvedCount + " 题，名次看榜单。（点一下可关掉本提示）";
     } else {
       $("ovTitle").textContent = "本轮已结束";
       $("ovText").textContent = "等待下一轮开始；本轮答案不公布。（点一下可关掉本提示）";
@@ -145,8 +144,8 @@
     if (mode === "timed") {
       const rank = me.rank ? "第 <b>" + me.rank + "</b> 名" : "排名更新中…";
       $("me").innerHTML =
-        `<div>已答对 <b>${me.solvedCount || 0}</b> 题</div>` +
-        `<div>累计步数 <b>${me.totalAttempts || 0}</b> · 当前题 <b>${me.attempts || 0}</b> 步</div>` +
+        `<div>已答对 <b>${me.solvedCount}</b> 题</div>` +
+        `<div>累计步数 <b>${me.totalAttempts}</b> · 当前题 <b>${me.attempts}</b> 步</div>` +
         `<div>${me.solvedCount ? rank : "答对一题即可上榜"}</div>`;
       return;
     }
@@ -161,18 +160,14 @@
   function renderHud() {
     const timed = mode === "timed";
     $("hud").hidden = !timed;
-    if (timed) $("hudSolved").textContent = me.solvedCount || 0;
+    if (timed) $("hudSolved").textContent = me.solvedCount;
     tick();
   }
 
   function tick() {
     if (mode !== "timed") return;
-    if (!endsAt) {
-      $("hudLeft").textContent = "--:--";
-      return;
-    }
     const left = endsAt - serverTime();
-    $("hudLeft").textContent = fmtLeft(left);
+    $("hudLeft").textContent = state === "closed" ? "已结束" : fmtLeft(left);
     // 本地先看到 0:00 就立刻补拉一次状态，不用等服务端轮询周期。
     if (left <= 0 && state === "open" && !expiredPolled) {
       expiredPolled = true;
@@ -181,19 +176,14 @@
   }
 
   function renderBoard(entries) {
-    const timed = mode === "timed";
-    $("boardTitle").textContent = timed ? "实时排行" : "本轮榜单";
-    $("lbHead").innerHTML = timed
-      ? "<tr><th>名次</th><th>昵称</th><th>答对</th><th>步数</th></tr>"
-      : "<tr><th>名次</th><th>昵称</th><th>步数</th><th>用时</th></tr>";
+    $("boardTitle").textContent = mode === "timed" ? "实时排行" : "本轮榜单";
+    $("lbHead").innerHTML = boardHead(mode);
     $("lboard").innerHTML = entries.length
       ? entries.map(entry => {
         const mine = entry.rank === me.rank && me.solvedCount > 0 ? "mine" : "";
-        return timed
-          ? `<tr class="${mine}"><td>${entry.rank}</td><td>${esc(entry.displayName)}</td><td><b>${entry.solvedCount}</b></td><td>${entry.attempts}</td></tr>`
-          : `<tr class="${mine}"><td>${entry.rank}</td><td>${esc(entry.displayName)}</td><td>${entry.attempts}</td><td>${fmtMs(entry.elapsedMs)}</td></tr>`;
+        return `<tr class="${mine}">${boardCells(entry, mode)}</tr>`;
       }).join("")
-      : `<tr><td colspan="4" class="muted">${timed ? "还没有人答对" : "还没有人解出"}</td></tr>`;
+      : boardEmpty(mode);
   }
 
   let toastTimer;
@@ -208,76 +198,58 @@
   // ---------- 本地记录：只用于重绘，名次与答对题数一律以服务端为准 ----------
 
   const storeKey = no => "wordle:r:" + no;
-  function save() {
+  // records 可与动画中的棋盘不同：答对换题时立即保存空棋盘。
+  function save(records = guesses) {
     try {
-      localStorage.setItem(storeKey(roundNo), JSON.stringify({ seq, guesses, solvedCount: localSolved }));
+      localStorage.setItem(storeKey(roundNo), JSON.stringify({ guesses: records, solvedCount: localSolved }));
     } catch { /* 隐私模式等，不影响比赛 */ }
   }
 
-  // 兼容两种存档：早期版本只存 guesses 数组，现在存 {seq, guesses, solvedCount}。
   function load(no) {
     try {
-      const saved = JSON.parse(localStorage.getItem(storeKey(no)));
-      const raw = Array.isArray(saved) ? saved : saved?.guesses;
-      const list = Array.isArray(raw)
-        ? raw.filter(g => g && /^[a-z]{5}$/.test(g.word) && /^[0-2]{5}$/.test(g.result))
-        : [];
-      return {
-        guesses: list,
-        seq: Number.isInteger(saved?.seq) && saved.seq > 0 ? saved.seq : 1,
-        solvedCount: Number.isInteger(saved?.solvedCount) && saved.solvedCount > 0 ? saved.solvedCount : 0,
-      };
-    } catch {
-      return { guesses: [], seq: 1, solvedCount: 0 };
-    }
+      const saved = localStorage.getItem(storeKey(no));
+      if (saved !== null) return JSON.parse(saved);
+    } catch { /* 存储不可用或 JSON 损坏时从空棋盘开始 */ }
+    return { guesses: [], solvedCount: 0 };
   }
 
-  // ---------- 场次与榜单：顺序轮询，拒绝跨场或提交前的旧响应 ----------
+  // ---------- 场次与榜单：一次请求获取一致快照，拒绝提交前的旧响应 ----------
 
   function applyRound(round) {
-    offset = round.serverNow ? round.serverNow - Date.now() : offset;
-    endsAt = round.endsAt || 0;
+    offset = round.serverNow - Date.now();
+    endsAt = round.endsAt;
     const no = round.roundNo;
-    const nextState = round.state;
-    const nextMode = round.mode || "round";
+    state = round.state;
+    mode = round.mode;
     if (no !== roundNo) {
       const saved = load(no);
       roundNo = no;
-      seq = saved.seq;
       localSolved = saved.solvedCount;
       guesses = saved.guesses;
       current = "";
       expiredPolled = false;
       dismissed = "";
-      me = {
-        solved: nextMode === "round" && guesses.some(g => g.result === "22222"),
-        attempts: guesses.length,
-        solvedCount: 0,
-        totalAttempts: 0,
-      };
-      renderBoard([]);
     }
-    mode = nextMode;
-    state = nextState;
-    if (mode !== "timed" && state !== "open") current = "";
-    render();
+    if (state !== "open") current = "";
   }
 
   async function refresh() {
     if (refreshing) return;
     refreshing = true;
     try {
-      const round = await api("/api/v1/round");
-      applyRound(round);
+      const no = roundNo;
       const attempts = guesses.length;
+      const solvedCount = localSolved;
       const leaderboard = await api("/api/v1/leaderboard");
-      if (leaderboard.roundNo !== roundNo || busy || clearing || attempts !== guesses.length) return;
+      // 请求期间提交过猜测或换过题，就丢弃旧快照，下次轮询再同步。
+      if (busy || (leaderboard.round.roundNo === no &&
+        (attempts !== guesses.length || solvedCount !== localSolved))) return;
+      applyRound(leaderboard.round);
       me = leaderboard.me;
       // 本地漏过一次答对（提交成功但响应丢了 / 中途刷新）时，服务端的题数更大：
       // 按服务端对齐，丢掉属于上一题的棋盘，直接开新题，免得旧提示被当成本题线索。
       if (mode === "timed" && me.solvedCount > localSolved) {
         localSolved = me.solvedCount;
-        seq = localSolved + 1;
         guesses = [];
         current = "";
         save();
@@ -295,28 +267,20 @@
   // ---------- 猜词 ----------
 
   // 限时赛答对后换题：留住刚解出的那行 CLEAR_MS，再清空棋盘。
-  function clearForNextWord(no) {
-    return new Promise(resolve => {
-      clearing = true;
-      setTimeout(() => {
-        if (no === roundNo) {
-          guesses = [];
-          seq = localSolved + 1;
-          current = "";
-          save();
-          render();
-        }
-        clearing = false;
-        resolve();
-      }, CLEAR_MS);
-    });
+  async function clearForNextWord(no) {
+    await new Promise(resolve => setTimeout(resolve, CLEAR_MS));
+    clearing = false;
+    if (no !== roundNo) return;
+    guesses = [];
+    current = "";
+    render();
   }
 
   async function submit() {
-    if (busy || clearing) return;
+    if (busy) return;
     if (mode === "round" && me.solved) return;
     if (state !== "open") {
-      toast(state === "waiting" ? "本轮还没开始" : state === "closed" && mode === "timed" ? "时间到，本场已结束" : "本轮已结束");
+      toast(state === "waiting" ? "本轮还没开始" : mode === "timed" ? "本场已结束" : "本轮已结束");
       return;
     }
     if (current.length !== WORD_LEN) {
@@ -336,20 +300,21 @@
       if (no !== roundNo) return;
       guesses.push({ word, result: response.result });
       current = "";
-      solved = response.solved === true;
+      solved = response.solved;
       usedAttempts = response.attempts;
       me = {
         ...me,
         solved: mode === "round" ? solved : false,
-        solvedCount: Number.isInteger(response.solvedCount) ? response.solvedCount : me.solvedCount,
+        solvedCount: response.solvedCount,
         // 限时赛答对即换题：本题已结束，新题从 0 步起算。
         attempts: solved && mode === "timed" ? 0 : response.attempts,
-        totalAttempts: (me.totalAttempts || 0) + 1,
+        totalAttempts: me.totalAttempts + 1,
+        elapsedMs: mode === "round" ? response.elapsedMs : 0,
       };
       if (solved) localSolved = me.solvedCount;
       // 先挡住输入、也别补空格子，再重绘出刚解出的那一行。
       if (solved && mode === "timed") clearing = true;
-      save();
+      save(solved && mode === "timed" ? [] : guesses);
       render(true);
       if (solved && mode === "timed") await clearForNextWord(no);
       refreshNeeded = solved;
@@ -375,7 +340,7 @@
       busy = false;
     }
     if (refreshNeeded) await refresh();
-    if (solved) {
+    if (solved && no === roundNo) {
       toast(mode === "timed"
         ? `🎉 答对第 ${me.solvedCount} 题 · 本题 ${usedAttempts} 步`
         : me.rank
@@ -385,13 +350,13 @@
   }
 
   function type(ch) {
-    if (busy || clearing || state !== "open" || (mode === "round" && me.solved) || current.length >= WORD_LEN) return;
+    if (busy || !playing() || current.length >= WORD_LEN) return;
     current += ch;
     render(true);
   }
 
   function backspace() {
-    if (busy || clearing || state !== "open" || (mode === "round" && me.solved) || !current) return;
+    if (busy || !playing() || !current) return;
     current = current.slice(0, -1);
     render(true);
   }

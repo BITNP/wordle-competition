@@ -21,7 +21,7 @@ main { flex: 1; display: flex; min-height: 0; }
        font-size: 13px; color: var(--muted); }
 #hud[hidden] { display: none; }
 #hud b { color: var(--text); font-size: 20px; font-variant-numeric: tabular-nums; }
-#hudLeft { font-size: 22px !important; color: var(--yellow); }
+#hud #hudLeft { font-size: 22px; color: var(--yellow); }
 .hud-hint { font-size: 12px; }
 #boardWrap { flex: 1; display: flex; align-items: center; justify-content: center; width: 100%; min-height: 0; overflow-y: auto; }
 #board { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; width: min(92vw, 340px); }

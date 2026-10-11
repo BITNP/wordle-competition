@@ -62,8 +62,8 @@
     </div>
     <div class="row" style="margin-top:12px">
       <label for="mins">时长</label>
-      <input id="mins" type="number" min="1" max="360" step="1" value="10" disabled>
-      <span class="muted">分钟（限时赛用，1 ~ 360；时间到自动收场）</span>
+      <input id="mins" type="number" min="0.5" max="360" step="0.5" value="10" disabled>
+      <span class="muted">分钟（限时赛用，0.5 ~ 360；时间到自动收场）</span>
       <span style="flex:1"></span>
       <button class="danger" id="closeBtn">结束本场</button>
       <button class="primary" id="openBtn">开赛</button>
@@ -96,13 +96,11 @@
 <script src="/common.js"></script>
 <script>
 "use strict";
-const {esc, fmtMs, fmtLeft, modeName} = WordleUI;
+const { fmtLeft, modeName, boardHead, boardCells, boardEmpty } = WordleUI;
 let token = "";           // 只在内存，刷新即失效，重新登录即可
 let timer = null;
-let endsAt = 0;           // 限时赛截止时刻（服务端时钟）
-let offset = 0;           // 服务端时钟 - 本地时钟
-let mode = "round";       // 当前这一场的玩法
-let lastSyncedRound = -1; // 上次把玩法写回单选框时的场次号
+let round = { roundNo: -1, state: "waiting", mode: "round", endsAt: 0 };
+let offset = 0; // 服务端时钟 - 本地时钟
 const $ = id => document.getElementById(id);
 
 const fmtTime = ms => new Date(ms).toLocaleString("zh-CN", { hour12: false });
@@ -116,7 +114,6 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     const error = new Error(body.error || ("HTTP " + res.status));
     error.status = res.status;
-    error.code = body.error;
     throw error;
   }
   return body;
@@ -153,8 +150,8 @@ const selectedMode = () => document.querySelector('input[name="mode"]:checked').
 $("openBtn").onclick = async () => {
   const m = selectedMode();
   const mins = Number($("mins").value);
-  if (m === "timed" && (!Number.isFinite(mins) || mins < 1 || mins > 360)) {
-    $("msg").textContent = "限时赛时长需在 1 ~ 360 分钟之间";
+  if (m === "timed" && (!Number.isFinite(mins) || mins < 0.5 || mins > 360)) {
+    $("msg").textContent = "限时赛时长需在 0.5 ~ 360 分钟之间";
     return;
   }
   const tip = m === "timed"
@@ -172,29 +169,23 @@ $("closeBtn").onclick = async () => {
 
 async function action(path, body) {
   $("msg").textContent = "";
-  try { await api(path, { method: "POST", body: JSON.stringify(body || {}) }); await refresh(); }
+  try { await api(path, { method: "POST", body: JSON.stringify(body) }); await refresh(); }
   catch (e) { $("msg").textContent = "操作失败：" + e.message; }
 }
 
 // 剩余时间按本地时钟走，不用等服务端刷新周期。
 function renderLeft() {
-  if (mode !== "timed" || !endsAt) { $("left").textContent = "—"; return; }
-  const left = endsAt - (Date.now() + offset);
-  $("left").textContent = left > 0 ? fmtLeft(left) : "已结束";
+  $("left").textContent = round.mode !== "timed" ? "—"
+    : round.state === "closed" ? "已结束"
+    : fmtLeft(round.endsAt - (Date.now() + offset));
 }
 
 function renderBoard(rows) {
-  const timed = mode === "timed";
-  $("boardTitle").textContent = timed ? "实时排行（按答对题数）" : "实时榜单（按步数 / 用时）";
-  $("boardHead").innerHTML = timed
-    ? "<tr><th>名次</th><th>昵称</th><th>答对题数</th><th>累计步数</th></tr>"
-    : "<tr><th>名次</th><th>昵称</th><th>步数</th><th>用时</th></tr>";
+  $("boardTitle").textContent = round.mode === "timed" ? "实时排行（按答对题数）" : "实时榜单（按步数 / 用时）";
+  $("boardHead").innerHTML = boardHead(round.mode);
   $("board").innerHTML = rows.length
-    ? rows.map(e => `<tr class="${e.rank === 1 ? "top1" : ""}">` + (timed
-        ? `<td>${e.rank}</td><td>${esc(e.displayName)}</td><td><b>${e.solvedCount}</b></td><td>${e.attempts}</td>`
-        : `<td>${e.rank}</td><td>${esc(e.displayName)}</td><td>${e.attempts}</td><td>${fmtMs(e.elapsedMs)}</td>`)
-      + "</tr>").join("")
-    : `<tr><td colspan="4" class="muted">${timed ? "还没有人答对" : "还没有人解出"}</td></tr>`;
+    ? rows.map(entry => `<tr class="${entry.rank === 1 ? "top1" : ""}">${boardCells(entry, round.mode)}</tr>`).join("")
+    : boardEmpty(round.mode);
 }
 
 async function refresh() {
@@ -207,19 +198,18 @@ async function refresh() {
     return;
   }
   const r = st.round;
-  mode = r.mode || "round";   // 榜单列与倒计时一律按"当前这一场"的玩法渲染
-  // 玩法单选只在开新场次时对齐服务端：否则管理员刚点了"限时赛"，
-  // 下一个 2s 轮询就会把它改回当前场次的玩法。
-  if (r.roundNo !== lastSyncedRound) {
-    lastSyncedRound = r.roundNo;
-    document.querySelectorAll('input[name="mode"]').forEach(el => { el.checked = el.value === mode; });
-    $("mins").disabled = mode !== "timed";
+  const changed = r.roundNo !== round.roundNo;
+  round = r;
+  // 只在切换场次时同步表单，避免轮询覆盖管理员正在编辑的玩法与时长。
+  if (changed) {
+    document.querySelectorAll('input[name="mode"]').forEach(el => { el.checked = el.value === r.mode; });
+    $("mins").disabled = r.mode !== "timed";
+    if (r.mode === "timed") $("mins").value = r.durationMs / 60000;
   }
-  offset = r.serverNow ? r.serverNow - Date.now() : offset;
-  endsAt = r.endsAt || 0;
+  offset = r.serverNow - Date.now();
 
   $("roundNo").textContent = r.roundNo || "—";
-  $("mode").textContent = modeName(mode);
+  $("mode").textContent = modeName(r.mode);
   $("roundAt").textContent = r.openedAt ? fmtTime(r.openedAt) : "—";
   $("state").innerHTML = '<span class="dot ' + r.state + '"></span>' + r.state;
   $("playing").textContent = r.playing;
@@ -228,7 +218,7 @@ async function refresh() {
   $("closeBtn").disabled = r.state !== "open";
   $("tick").textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
   renderLeft();
-  renderBoard(st.board || []);
+  renderBoard(st.board);
 }
 
 setInterval(renderLeft, 500);

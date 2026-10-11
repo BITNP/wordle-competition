@@ -56,10 +56,10 @@
   <ul>
     <li>由管理面板开赛时选玩法：<b>轮次赛</b>（一轮一题，解出即收工，按步数 / 用时排名）或
       <b>限时赛</b>（限时内答对一题立刻换下一题继续答，按答对题数排名，时间到自动收场）。</li>
-    <li>每人每场由服务端分配一个 5 字母小写答案，猜测必须落在下面的合法猜词表里，同一题不能重复猜同一个词。</li>
+    <li>每人的当前题由服务端分配一个 5 字母小写答案；限时赛答对后分配下一题。猜测必须落在下面的合法猜词表里，同一题不能重复猜同一个词。</li>
     <li><code>result</code> 是 5 位标记串：<code>0</code> 答案里没有这个字母；<code>1</code> 有但位置不对；<code>2</code> 位置正确（重复字母按标准 Wordle 语义）。全 <code>2</code> 即答对当前题。</li>
     <li>轮次赛名次按 <b>步数少 → 用时短 → 提交早 → sub 小</b> 比；限时赛名次按 <b>答对题数多 → 达到该题数早 → 累计步数少</b> 比。只有答对过至少一题的人上榜。被拒的猜测不计步、不计时。</li>
-    <li>同时长口径与玩法无关：<b>步数</b> = 累计被接受的猜测次数，<b>用时</b> = 累计净解题用时（各题用时之和，不含换题之间的空档）。轮次赛里这两个数就是解出这题的成绩。</li>
+    <li>榜单和历史成绩的口径与玩法无关：<b>步数</b> = 累计被接受的猜测次数，<b>用时</b> = 累计净解题用时（各题用时之和，不含换题之间的空档）。个人进度与猜测响应的 <code>attempts</code> 则是当前题步数，个人进度的 <code>totalAttempts</code> 是累计步数。</li>
     <li>两次被接受的猜测间隔至少 1s（1 次/秒），两种玩法都一样，脚本请自行 sleep。</li>
     <li>限时赛答对后服务端立刻换新题，响应里的 <code>solved:true</code> + <code>solvedCount</code> 就是信号：清空自己的棋盘接着猜下一题即可，不必重新拉取配置。</li>
   </ul>
@@ -72,7 +72,7 @@
     <tbody>
       <tr><td><code>GET /api/v1/round</code></td><td>Bearer</td><td><code>{"state":"waiting|open|closed","roundNo":7,"mode":"round|timed","openedAt":0,"durationMs":600000,"endsAt":1712345678901,"serverNow":1712345678901,"playing":3,"solved":5}</code>：<code>endsAt</code> 为 0 表示非限时赛；倒计时请用 <code>endsAt - (serverNow + 本地流逝时间)</code>，别信本机时钟</td></tr>
       <tr><td><code>POST /api/v1/guesses</code></td><td>Bearer</td><td>请求 <code>{"guess":"crane"}</code>；响应 <code>{"result":"01202","solved":false,"solvedCount":2,"attempts":3,"elapsedMs":0}</code>。限时赛 <code>solved:true</code> 即已换下一题</td></tr>
-      <tr><td><code>GET /api/v1/leaderboard</code></td><td>Bearer</td><td><code>{"roundNo":7,"entries":[{"rank":1,"displayName":"…","solvedCount":6,"attempts":38,"elapsedMs":271000}],"me":{"solved":false,"rank":1,"attempts":3,"totalAttempts":38,"solvedCount":6,"elapsedMs":0}}</code>；轮次赛 <code>solvedCount</code> 恒为 1</td></tr>
+      <tr><td><code>GET /api/v1/leaderboard</code></td><td>Bearer</td><td><code>{"round":{"state":"open","roundNo":7,"mode":"timed","openedAt":1712345078901,"durationMs":600000,"endsAt":1712345678901,"serverNow":1712345500000,"playing":3,"solved":5},"entries":[{"rank":1,"displayName":"…","solvedCount":6,"attempts":38,"elapsedMs":271000}],"me":{"solved":false,"rank":1,"attempts":3,"totalAttempts":38,"solvedCount":6,"elapsedMs":0}}</code>；<code>round</code>、<code>entries</code> 和 <code>me</code> 来自同一次快照，轮询这个接口即可。轮次赛榜单行的 <code>solvedCount</code> 恒为 1，个人进度 <code>me.solvedCount</code> 为 0 或 1；未上榜时 <code>rank</code> 为 0</td></tr>
       <tr><td><code>GET /words/answers.txt</code></td><td>无</td><td>答案池 2315 个词，每行一个</td></tr>
       <tr><td><code>GET /words/valid.txt</code></td><td>无</td><td>合法猜词 12972 个词，每行一个（含答案池）</td></tr>
     </tbody>
@@ -80,7 +80,10 @@
   <p class="muted" style="margin-bottom:0">错误码：<code>bad_length</code> / <code>not_in_word_list</code> / <code>already_guessed</code>（400）、
     <code>unauthorized</code>（401，回来换 token）、<code>round_not_open</code> / <code>expired</code>（409，<code>expired</code> 在限时赛里表示时间到） /
     <code>already_solved</code>（409，只有轮次赛会出现）、<code>too_many_requests</code>（429，发太快）。
-    管理接口另可能返回 <code>bad_mode</code> / <code>bad_duration</code>（400）。错误响应形如 <code>{"error":"not_in_word_list"}</code>。</p>
+    管理接口另可能返回 <code>bad_request</code> / <code>bad_mode</code> / <code>bad_duration</code>（400）。错误响应形如 <code>{"error":"not_in_word_list"}</code>。</p>
+  <p class="muted">管理开赛接口 <code>POST /api/v1/admin/round/open</code> 必须提交 JSON 并显式指定玩法：
+    <code>{"mode":"round"}</code> 或 <code>{"mode":"timed","durationSec":600}</code>。
+    限时赛时长为 30 ~ 21600 秒；成功返回与 <code>GET /api/v1/round</code> 相同结构的场次快照。</p>
 </div>
 
 <div class="card">
@@ -118,8 +121,8 @@ def guess(word):
 
 
 def leaderboard():
-    """{"roundNo":7,"entries":[...],"me":{...}}，entries 按玩法排序，
-    限时赛看 solvedCount（答对题数），轮次赛看 attempts/elapsedMs。"""
+    """{"round":{...},"entries":[...],"me":{...}}，一次读取场次与成绩。
+    entries 按 round.mode 排序：限时赛看 solvedCount，轮次赛看 attempts/elapsedMs。"""
     return call("/api/v1/leaderboard")
 
 

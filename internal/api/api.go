@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -148,8 +147,7 @@ func (s *Server) handleGuess(w http.ResponseWriter, r *http.Request, sub, name s
 }
 
 func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request, sub, _ string) {
-	entries, me, no := s.game.Leaderboard(sub)
-	writeJSON(w, http.StatusOK, map[string]any{"roundNo": no, "entries": entries, "me": me})
+	writeJSON(w, http.StatusOK, s.game.Leaderboard(sub))
 }
 
 func writeGameError(w http.ResponseWriter, err error) {
@@ -196,8 +194,8 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.game.AdminState())
 }
 
-// handleAdminOpen 开新一场。请求体可省：没有 mode 就按轮次赛开，
-// 限时赛则必须给 durationSec。
+// handleAdminOpen 开新一场。请求体必须显式指定 mode；
+// 限时赛必须给 durationSec，轮次赛忽略时长并规范化为 0。
 //
 //	{"mode":"round"}                         轮次赛：一轮一题，解出即收工
 //	{"mode":"timed","durationSec":600}       限时赛：10 分钟，答对一题继续下一题
@@ -206,24 +204,18 @@ func (s *Server) handleAdminOpen(w http.ResponseWriter, r *http.Request) {
 		Mode        string `json:"mode"`
 		DurationSec int64  `json:"durationSec"`
 	}
-	switch err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); {
-	case err == nil, errors.Is(err, io.EOF): // 空体 = 老前端，按默认玩法
-	default:
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request")
 		return
 	}
 
-	mode := game.Mode(req.Mode)
-	if mode == "" {
-		mode = game.ModeRound
-	}
-	no, state, err := s.game.Open(time.Now().UnixMilli(), mode, req.DurationSec*1000)
+	snapshot, err := s.game.Open(time.Now().UnixMilli(), game.Mode(req.Mode), req.DurationSec*1000)
 	if err != nil {
 		writeGameError(w, err)
 		return
 	}
-	s.log.Printf("开赛 round=%d mode=%s duration=%ds", no, mode, req.DurationSec)
-	writeJSON(w, http.StatusOK, map[string]any{"roundNo": no, "state": state, "mode": mode})
+	s.log.Printf("开赛 round=%d mode=%s duration=%ds", snapshot.RoundNo, snapshot.Mode, snapshot.DurationMs/1000)
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 func (s *Server) handleAdminClose(w http.ResponseWriter, r *http.Request) {
