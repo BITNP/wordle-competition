@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -125,8 +126,7 @@ func (r *statusRecorder) WriteHeader(code int) {
 // ---------- 选手接口 ----------
 
 func (s *Server) handleRound(w http.ResponseWriter, r *http.Request, _, _ string) {
-	state, no := s.game.Round()
-	writeJSON(w, http.StatusOK, map[string]any{"state": state, "roundNo": no})
+	writeJSON(w, http.StatusOK, s.game.Status())
 }
 
 func (s *Server) handleGuess(w http.ResponseWriter, r *http.Request, sub, name string) {
@@ -139,12 +139,12 @@ func (s *Server) handleGuess(w http.ResponseWriter, r *http.Request, sub, name s
 	}
 	guess := strings.ToLower(strings.TrimSpace(req.Guess))
 
-	result, err := s.game.Guess(sub, name, guess, time.Now().UnixMilli())
+	outcome, err := s.game.Guess(sub, name, guess, time.Now().UnixMilli())
 	if err != nil {
 		writeGameError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"result": result})
+	writeJSON(w, http.StatusOK, outcome)
 }
 
 func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request, sub, _ string) {
@@ -154,7 +154,8 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request, sub, 
 
 func writeGameError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, game.ErrBadLength), errors.Is(err, game.ErrNotInWordList), errors.Is(err, game.ErrAlreadyGuessed):
+	case errors.Is(err, game.ErrBadLength), errors.Is(err, game.ErrNotInWordList), errors.Is(err, game.ErrAlreadyGuessed),
+		errors.Is(err, game.ErrBadMode), errors.Is(err, game.ErrBadDuration):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, game.ErrRoundNotOpen), errors.Is(err, game.ErrExpired), errors.Is(err, game.ErrAlreadySolved):
 		writeError(w, http.StatusConflict, err.Error())
@@ -189,19 +190,45 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"token": token})
 }
 
+// handleAdminState 管理面板用：场次概览 + 实时榜单。投屏就投这一页，
+// 答对题数就在榜单里，不需要另开一个公开只读接口。
 func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.game.AdminState())
 }
 
+// handleAdminOpen 开新一场。请求体可省：没有 mode 就按轮次赛开，
+// 限时赛则必须给 durationSec。
+//
+//	{"mode":"round"}                         轮次赛：一轮一题，解出即收工
+//	{"mode":"timed","durationSec":600}       限时赛：10 分钟，答对一题继续下一题
 func (s *Server) handleAdminOpen(w http.ResponseWriter, r *http.Request) {
-	no, state := s.game.Open(time.Now().UnixMilli())
-	s.log.Printf("开轮 round=%d", no)
-	writeJSON(w, http.StatusOK, map[string]any{"no": no, "state": state})
+	var req struct {
+		Mode        string `json:"mode"`
+		DurationSec int64  `json:"durationSec"`
+	}
+	switch err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); {
+	case err == nil, errors.Is(err, io.EOF): // 空体 = 老前端，按默认玩法
+	default:
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+
+	mode := game.Mode(req.Mode)
+	if mode == "" {
+		mode = game.ModeRound
+	}
+	no, state, err := s.game.Open(time.Now().UnixMilli(), mode, req.DurationSec*1000)
+	if err != nil {
+		writeGameError(w, err)
+		return
+	}
+	s.log.Printf("开赛 round=%d mode=%s duration=%ds", no, mode, req.DurationSec)
+	writeJSON(w, http.StatusOK, map[string]any{"roundNo": no, "state": state, "mode": mode})
 }
 
 func (s *Server) handleAdminClose(w http.ResponseWriter, r *http.Request) {
 	state := s.game.Close()
-	s.log.Printf("关轮 state=%s", state)
+	s.log.Printf("收场 state=%s", state)
 	writeJSON(w, http.StatusOK, map[string]any{"state": state})
 }
 

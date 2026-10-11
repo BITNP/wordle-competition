@@ -54,10 +54,14 @@
 <div class="card">
   <h2>② 规则</h2>
   <ul>
-    <li>每人每轮由服务端分配一个 5 字母小写答案，猜测必须落在下面的合法猜词表里，同一轮不能重复猜同一个词。</li>
-    <li><code>result</code> 是 5 位标记串：<code>0</code> 答案里没有这个字母；<code>1</code> 有但位置不对；<code>2</code> 位置正确（重复字母按标准 Wordle 语义）。全 <code>2</code> 即解出。</li>
-    <li>名次按 <b>步数少 → 用时短 → 提交早 → sub 小</b> 比；只有已解出的人上榜。被拒的猜测不计步、不计时。</li>
-    <li>用时 = 第一次被接受的猜测 → 解出那一刻。两次被接受的猜测间隔至少 1s（1 次/秒），脚本请自行 sleep。</li>
+    <li>由管理面板开赛时选玩法：<b>轮次赛</b>（一轮一题，解出即收工，按步数 / 用时排名）或
+      <b>限时赛</b>（限时内答对一题立刻换下一题继续答，按答对题数排名，时间到自动收场）。</li>
+    <li>每人每场由服务端分配一个 5 字母小写答案，猜测必须落在下面的合法猜词表里，同一题不能重复猜同一个词。</li>
+    <li><code>result</code> 是 5 位标记串：<code>0</code> 答案里没有这个字母；<code>1</code> 有但位置不对；<code>2</code> 位置正确（重复字母按标准 Wordle 语义）。全 <code>2</code> 即答对当前题。</li>
+    <li>轮次赛名次按 <b>步数少 → 用时短 → 提交早 → sub 小</b> 比；限时赛名次按 <b>答对题数多 → 达到该题数早 → 累计步数少</b> 比。只有答对过至少一题的人上榜。被拒的猜测不计步、不计时。</li>
+    <li>同时长口径与玩法无关：<b>步数</b> = 累计被接受的猜测次数，<b>用时</b> = 累计净解题用时（各题用时之和，不含换题之间的空档）。轮次赛里这两个数就是解出这题的成绩。</li>
+    <li>两次被接受的猜测间隔至少 1s（1 次/秒），两种玩法都一样，脚本请自行 sleep。</li>
+    <li>限时赛答对后服务端立刻换新题，响应里的 <code>solved:true</code> + <code>solvedCount</code> 就是信号：清空自己的棋盘接着猜下一题即可，不必重新拉取配置。</li>
   </ul>
 </div>
 
@@ -66,16 +70,17 @@
   <table>
     <thead><tr><th>方法与路径</th><th>鉴权</th><th>说明</th></tr></thead>
     <tbody>
-      <tr><td><code>GET /api/v1/round</code></td><td>Bearer</td><td><code>{"state":"waiting|open|closed","roundNo":7}</code></td></tr>
-      <tr><td><code>POST /api/v1/guesses</code></td><td>Bearer</td><td>请求 <code>{"guess":"crane"}</code>；响应 <code>{"result":"01202"}</code></td></tr>
-      <tr><td><code>GET /api/v1/leaderboard</code></td><td>Bearer</td><td><code>{"roundNo":7,"entries":[{"rank":1,"displayName":"…","attempts":3,"elapsedMs":4120}],"me":{"solved":true,"rank":1,"attempts":3,"elapsedMs":4120}}</code></td></tr>
+      <tr><td><code>GET /api/v1/round</code></td><td>Bearer</td><td><code>{"state":"waiting|open|closed","roundNo":7,"mode":"round|timed","openedAt":0,"durationMs":600000,"endsAt":1712345678901,"serverNow":1712345678901,"playing":3,"solved":5}</code>：<code>endsAt</code> 为 0 表示非限时赛；倒计时请用 <code>endsAt - (serverNow + 本地流逝时间)</code>，别信本机时钟</td></tr>
+      <tr><td><code>POST /api/v1/guesses</code></td><td>Bearer</td><td>请求 <code>{"guess":"crane"}</code>；响应 <code>{"result":"01202","solved":false,"solvedCount":2,"attempts":3,"elapsedMs":0}</code>。限时赛 <code>solved:true</code> 即已换下一题</td></tr>
+      <tr><td><code>GET /api/v1/leaderboard</code></td><td>Bearer</td><td><code>{"roundNo":7,"entries":[{"rank":1,"displayName":"…","solvedCount":6,"attempts":38,"elapsedMs":271000}],"me":{"solved":false,"rank":1,"attempts":3,"totalAttempts":38,"solvedCount":6,"elapsedMs":0}}</code>；轮次赛 <code>solvedCount</code> 恒为 1</td></tr>
       <tr><td><code>GET /words/answers.txt</code></td><td>无</td><td>答案池 2315 个词，每行一个</td></tr>
       <tr><td><code>GET /words/valid.txt</code></td><td>无</td><td>合法猜词 12972 个词，每行一个（含答案池）</td></tr>
     </tbody>
   </table>
   <p class="muted" style="margin-bottom:0">错误码：<code>bad_length</code> / <code>not_in_word_list</code> / <code>already_guessed</code>（400）、
-    <code>unauthorized</code>（401，回来换 token）、<code>round_not_open</code> / <code>expired</code> / <code>already_solved</code>（409）、
-    <code>too_many_requests</code>（429，发太快）。错误响应形如 <code>{"error":"not_in_word_list"}</code>。</p>
+    <code>unauthorized</code>（401，回来换 token）、<code>round_not_open</code> / <code>expired</code>（409，<code>expired</code> 在限时赛里表示时间到） /
+    <code>already_solved</code>（409，只有轮次赛会出现）、<code>too_many_requests</code>（429，发太快）。
+    管理接口另可能返回 <code>bad_mode</code> / <code>bad_duration</code>（400）。错误响应形如 <code>{"error":"not_in_word_list"}</code>。</p>
 </div>
 
 <div class="card">
@@ -100,17 +105,21 @@ def call(path, body=None):
 
 
 def round_state():
-    """{"state":"waiting|open|closed","roundNo":7}"""
+    """{"state":"waiting|open|closed","roundNo":7,"mode":"round|timed",
+    "endsAt":1712345678901,"serverNow":1712345678901,...}"""
     return call("/api/v1/round")
 
 
 def guess(word):
-    """{"result":"01202"}，全 2 即解出。"""
+    """{"result":"01202","solved":false,"solvedCount":2,"attempts":3}
+    限时赛里 solved 为 True 表示这题刚答对、服务端已换下一题：
+    清空自己的棋盘，接着用同一个循环猜新题即可。"""
     return call("/api/v1/guesses", {"guess": word})
 
 
 def leaderboard():
-    """{"roundNo":7,"entries":[...],"me":{...}}"""
+    """{"roundNo":7,"entries":[...],"me":{...}}，entries 按玩法排序，
+    限时赛看 solvedCount（答对题数），轮次赛看 attempts/elapsedMs。"""
     return call("/api/v1/leaderboard")
 
 

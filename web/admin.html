@@ -19,8 +19,14 @@
   button:disabled { opacity: .45; cursor: default; }
   button.primary { background: var(--green); border-color: var(--green); color: var(--text); font-weight: 600; }
   button.danger  { background: #8d4e4e; border-color: #8d4e4e; color: var(--text); }
-  input { font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+  input[type=password], input[type=number] { font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
           background: var(--bg); color: inherit; min-width: 180px; }
+  input[type=number] { min-width: 0; width: 90px; }
+  input[type=number]:disabled { opacity: .45; }
+  label { cursor: pointer; }
+  .modes { display: flex; flex-wrap: wrap; gap: 18px; }
+  .modes label { display: flex; align-items: center; gap: 6px; }
+  .modes em { color: var(--muted); font-style: normal; font-size: 12px; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
   th { color: var(--muted); font-weight: 500; font-size: 12px; }
@@ -44,27 +50,44 @@
 
 <div id="panel" hidden>
   <div class="card">
-    <div class="row" style="justify-content:space-between">
-      <div class="stats">
-        <div class="stat"><b id="roundNo">—</b><span>轮次号</span></div>
-        <div class="stat"><b id="roundAt">—</b><span>开轮时间</span></div>
-        <div class="stat"><b id="state">—</b><span>状态</span></div>
-        <div class="stat"><b id="playing">0</b><span>进行中</span></div>
-        <div class="stat"><b id="solved">0</b><span>已解出</span></div>
-      </div>
-      <div class="row">
-        <button class="danger" id="closeBtn">结束本轮</button>
-        <button class="primary" id="openBtn">开启下一轮</button>
-      </div>
+    <div class="row" style="justify-content:space-between;margin-bottom:10px">
+      <b>开赛</b>
+      <span class="muted">这一页就是大屏：投屏打开 /admin，下面的实时榜单每 2s 刷新</span>
+    </div>
+    <div class="modes">
+      <label><input type="radio" name="mode" value="round" checked> 轮次赛
+        <em>一轮一题，解出即收工，按步数 / 用时排名</em></label>
+      <label><input type="radio" name="mode" value="timed"> 限时赛
+        <em>限时内答对一题立刻换下一题继续答，按答对题数排名</em></label>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label for="mins">时长</label>
+      <input id="mins" type="number" min="1" max="360" step="1" value="10" disabled>
+      <span class="muted">分钟（限时赛用，1 ~ 360；时间到自动收场）</span>
+      <span style="flex:1"></span>
+      <button class="danger" id="closeBtn">结束本场</button>
+      <button class="primary" id="openBtn">开赛</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="stats">
+      <div class="stat"><b id="roundNo">—</b><span>场次号</span></div>
+      <div class="stat"><b id="mode">—</b><span>玩法</span></div>
+      <div class="stat"><b id="roundAt">—</b><span>开赛时间</span></div>
+      <div class="stat"><b id="state">—</b><span>状态</span></div>
+      <div class="stat"><b id="left">—</b><span>剩余时间</span></div>
+      <div class="stat"><b id="playing">0</b><span>作答中</span></div>
+      <div class="stat"><b id="solved">0</b><span>已答对人数</span></div>
     </div>
   </div>
 
   <div class="card">
     <div class="row" style="justify-content:space-between;margin-bottom:6px">
-      <b>本轮实时榜单</b><span class="muted" id="tick"></span>
+      <b id="boardTitle">实时榜单</b><span class="muted" id="tick"></span>
     </div>
     <table>
-      <thead><tr><th>名次</th><th>昵称</th><th>步数</th><th>用时</th></tr></thead>
+      <thead id="boardHead"><tr><th>名次</th><th>昵称</th><th>步数</th><th>用时</th></tr></thead>
       <tbody id="board"><tr><td colspan="4" class="muted">还没有人解出</td></tr></tbody>
     </table>
   </div>
@@ -73,9 +96,13 @@
 <script src="/common.js"></script>
 <script>
 "use strict";
-const {esc, fmtMs} = WordleUI;
+const {esc, fmtMs, fmtLeft, modeName} = WordleUI;
 let token = "";           // 只在内存，刷新即失效，重新登录即可
 let timer = null;
+let endsAt = 0;           // 限时赛截止时刻（服务端时钟）
+let offset = 0;           // 服务端时钟 - 本地时钟
+let mode = "round";       // 当前这一场的玩法
+let lastSyncedRound = -1; // 上次把玩法写回单选框时的场次号
 const $ = id => document.getElementById(id);
 
 const fmtTime = ms => new Date(ms).toLocaleString("zh-CN", { hour12: false });
@@ -117,19 +144,57 @@ $("loginBtn").onclick = async () => {
 };
 $("pw").addEventListener("keydown", e => { if (e.key === "Enter") $("loginBtn").click(); });
 
+// 只有限时赛才需要时长；切玩法时同步输入框可用状态。
+for (const radio of document.querySelectorAll('input[name="mode"]')) {
+  radio.addEventListener("change", () => { $("mins").disabled = selectedMode() !== "timed"; });
+}
+const selectedMode = () => document.querySelector('input[name="mode"]:checked').value;
+
 $("openBtn").onclick = async () => {
-  if (!confirm("开启下一轮？上一轮进度作废，前端会在 3s 内清盘。")) return;
-  await action("/api/v1/admin/round/open");
+  const m = selectedMode();
+  const mins = Number($("mins").value);
+  if (m === "timed" && (!Number.isFinite(mins) || mins < 1 || mins > 360)) {
+    $("msg").textContent = "限时赛时长需在 1 ~ 360 分钟之间";
+    return;
+  }
+  const tip = m === "timed"
+    ? `开启限时赛：${mins} 分钟，答对一题立刻换下一题，时间到自动收场。上一场进度作废。`
+    : "开启轮次赛？上一场进度作废，前端会在 3s 内清盘。";
+  if (!confirm(tip)) return;
+  await action("/api/v1/admin/round/open", m === "timed"
+    ? { mode: m, durationSec: Math.round(mins * 60) }
+    : { mode: m });
 };
 $("closeBtn").onclick = async () => {
-  if (!confirm("结束本轮？之后到达的猜测一律 409 expired。")) return;
-  await action("/api/v1/admin/round/close");
+  if (!confirm("结束本场？之后到达的猜测一律 409 expired。")) return;
+  await action("/api/v1/admin/round/close", {});
 };
 
-async function action(path) {
+async function action(path, body) {
   $("msg").textContent = "";
-  try { await api(path, { method: "POST" }); await refresh(); }
+  try { await api(path, { method: "POST", body: JSON.stringify(body || {}) }); await refresh(); }
   catch (e) { $("msg").textContent = "操作失败：" + e.message; }
+}
+
+// 剩余时间按本地时钟走，不用等服务端刷新周期。
+function renderLeft() {
+  if (mode !== "timed" || !endsAt) { $("left").textContent = "—"; return; }
+  const left = endsAt - (Date.now() + offset);
+  $("left").textContent = left > 0 ? fmtLeft(left) : "已结束";
+}
+
+function renderBoard(rows) {
+  const timed = mode === "timed";
+  $("boardTitle").textContent = timed ? "实时排行（按答对题数）" : "实时榜单（按步数 / 用时）";
+  $("boardHead").innerHTML = timed
+    ? "<tr><th>名次</th><th>昵称</th><th>答对题数</th><th>累计步数</th></tr>"
+    : "<tr><th>名次</th><th>昵称</th><th>步数</th><th>用时</th></tr>";
+  $("board").innerHTML = rows.length
+    ? rows.map(e => `<tr class="${e.rank === 1 ? "top1" : ""}">` + (timed
+        ? `<td>${e.rank}</td><td>${esc(e.displayName)}</td><td><b>${e.solvedCount}</b></td><td>${e.attempts}</td>`
+        : `<td>${e.rank}</td><td>${esc(e.displayName)}</td><td>${e.attempts}</td><td>${fmtMs(e.elapsedMs)}</td>`)
+      + "</tr>").join("")
+    : `<tr><td colspan="4" class="muted">${timed ? "还没有人答对" : "还没有人解出"}</td></tr>`;
 }
 
 async function refresh() {
@@ -142,7 +207,19 @@ async function refresh() {
     return;
   }
   const r = st.round;
-  $("roundNo").textContent = r.no || "—";
+  mode = r.mode || "round";   // 榜单列与倒计时一律按"当前这一场"的玩法渲染
+  // 玩法单选只在开新场次时对齐服务端：否则管理员刚点了"限时赛"，
+  // 下一个 2s 轮询就会把它改回当前场次的玩法。
+  if (r.roundNo !== lastSyncedRound) {
+    lastSyncedRound = r.roundNo;
+    document.querySelectorAll('input[name="mode"]').forEach(el => { el.checked = el.value === mode; });
+    $("mins").disabled = mode !== "timed";
+  }
+  offset = r.serverNow ? r.serverNow - Date.now() : offset;
+  endsAt = r.endsAt || 0;
+
+  $("roundNo").textContent = r.roundNo || "—";
+  $("mode").textContent = modeName(mode);
   $("roundAt").textContent = r.openedAt ? fmtTime(r.openedAt) : "—";
   $("state").innerHTML = '<span class="dot ' + r.state + '"></span>' + r.state;
   $("playing").textContent = r.playing;
@@ -150,12 +227,11 @@ async function refresh() {
   $("openBtn").disabled = r.state === "open";
   $("closeBtn").disabled = r.state !== "open";
   $("tick").textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
-
-  const rows = st.board || [];
-  $("board").innerHTML = rows.length
-    ? rows.map(e => `<tr class="${e.rank === 1 ? "top1" : ""}"><td>${e.rank}</td><td>${esc(e.displayName)}</td><td>${e.attempts}</td><td>${fmtMs(e.elapsedMs)}</td></tr>`).join("")
-    : '<tr><td colspan="4" class="muted">还没有人解出</td></tr>';
+  renderLeft();
+  renderBoard(st.board || []);
 }
+
+setInterval(renderLeft, 500);
 </script>
 </body>
 </html>

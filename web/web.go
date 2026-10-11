@@ -2,9 +2,9 @@
 //
 // 目录布局就是 URL 布局，所以不需要任何额外路由：
 //
-//	index.html + app.js + style.css  选手页（/）
+//	index.html + app.js + style.css  选手页（/，两种玩法共用一份脚本）
 //	common.js + base.css             共享脚本与主题
-//	admin.html                       管理面板（/admin）
+//	admin.html                       管理面板（/admin，开赛时选玩法与限时时长；投屏就投这一页）
 //	api.html                         选手 API 说明页（/api.html）
 //	words/answers.txt、words/valid.txt  题库（/words/…）
 //

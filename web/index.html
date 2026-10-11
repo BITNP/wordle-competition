@@ -18,6 +18,11 @@
 
 <main>
   <section id="game">
+    <div id="hud" hidden>
+      <span class="hud-item">已答对 <b id="hudSolved">0</b> 题</span>
+      <span class="hud-item">剩余 <b id="hudLeft">--:--</b></span>
+      <span class="hud-item hud-hint">答对一题立刻换下一题，时间到为止</span>
+    </div>
     <div id="boardWrap"><div id="board"></div></div>
     <div id="keyboard"></div>
   </section>
@@ -25,9 +30,9 @@
   <aside>
     <h2>我的成绩</h2>
     <div id="me"></div>
-    <h2>本轮榜单</h2>
+    <h2 id="boardTitle">本轮榜单</h2>
     <table>
-      <thead><tr><th>名次</th><th>昵称</th><th>步数</th><th>用时</th></tr></thead>
+      <thead id="lbHead"></thead>
       <tbody id="lboard"><tr><td colspan="4" class="muted">还没有人解出</td></tr></tbody>
     </table>
   </aside>
